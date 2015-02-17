@@ -32,30 +32,25 @@ func FindPlayerUrl(page []byte) string {
 var rtmpdumpBin *string = flag.String("rtmpdump", "rtmpdump", "Path to rtmpdump executable")
 
 type RtmpStream struct {
-	ShowUrl string
+	Source RtmpSource
 	Stream string
 	File string
+	Filename string
 }
 
 func (r *RtmpStream) Download() error {
 	start := time.Now()
-	log.Printf("Starting download of stream from %s as %s", r.ShowUrl, r.OutName())
+	log.Printf("Starting download of stream from %s as %s", r.Source.Url(), r.Filename)
 	
 	rtmpCmd := exec.Command(*rtmpdumpBin, "-R", "-r", "rtmp://"+r.Stream, 
-						 "-y", r.File, "-o", r.OutName(), "-q")
+						 "-y", r.File, "-o", r.Filename, "-q")
 	err := rtmpCmd.Run()
 	if err != nil {
 		return err
 	}
 	end := time.Now()
-	log.Printf("Download of stream from %s took %s", r.ShowUrl, end.Sub(start))
+	log.Printf("Download of stream from %s took %s", r.Source.Url(), end.Sub(start))
 	return nil
-}
-
-func (r *RtmpStream) OutName() string {
-	showName := path.Base(urlMustParse(r.ShowUrl).Path)
-	showExt := path.Ext(r.File)
-	return showName + showExt
 }
 
 func CheckForRtmp() (err error) {
@@ -63,20 +58,21 @@ func CheckForRtmp() (err error) {
 	return
 }
 
-func ParsePlayerParams(showUrl, rawurl string) (*RtmpStream, error) {
+func ParsePlayerParams(rawurl string, rtmp *RtmpStream) error {
 	playerUrl, err := url.Parse(rawurl)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	query := playerUrl.Query()
 
-	stream := query.Get("stream")
-	file := query.Get("file")
-	if stream == "" || file == "" {
-		return nil, errors.New("Not a valid player url "+rawurl)
+	rtmp.Stream = query.Get("stream")
+	rtmp.File = query.Get("file")
+
+	if rtmp.Stream == "" || rtmp.File == "" {
+		return errors.New("Not a valid player url "+rawurl)
 	}
-	
-	return &RtmpStream{showUrl, stream, file}, nil
+
+	return nil
 }
 
 func urlMustParse(rawurl string) *url.URL {
@@ -89,18 +85,18 @@ func urlMustParse(rawurl string) *url.URL {
 
 var showpageRe *regexp.Regexp = regexp.MustCompile(`<h2><a href="(/vaata/[^"]*)"`)
 
-func FindShowUrls(page []byte, baseUrl string) ([]string, error) {
+func FindShows(page []byte, baseUrl string) ([]RtmpSource, error) {
 	base := urlMustParse(baseUrl)
 	
 	matches := showpageRe.FindAllSubmatch(page, -1)
 	if matches == nil {
 		return nil, errors.New("No shows found")
 	}
-	results := make([]string, 0, len(matches))
+	results := make([]RtmpSource, 0, len(matches))
 	for _, match := range matches {
 		rel := urlMustParse(string(match[1]))
 		absUrl := base.ResolveReference(rel).String()
-		results = append(results, absUrl)
+		results = append(results, &NamedShow{ShowUrl:absUrl})
 	}
 	return results, nil
 }
@@ -123,16 +119,13 @@ func DownloadPage(url string) ([]byte, error) {
 
 type DownloadResult struct {
 	ShowUrl string
-	Code DownloadResultCode
 	Error error
 	Filename string
 }
 
-type DownloadResultCode int
-const (
-	DownloadOk DownloadResultCode = iota
-	DownloadFailed
-)
+func (dr DownloadResult) IsSuccessful() bool {
+	return dr.Error == nil
+}
 
 type DownloadRegistry interface {
 	Exists(showUrl string) bool
@@ -191,80 +184,126 @@ func (c *CsvRegistry) Close() {
 	c.writer = nil
 }
 
-func FetchSeries(registry DownloadRegistry, seriesUrl string, parallel int) {
+func FetchSeries(seriesUrl string, dm *DownloadManager) {
 	seriesPage, err := DownloadPage(seriesUrl)
 	if err != nil {
 		log.Fatal(err)
 	}
-	
-	showUrls, err := FindShowUrls(seriesPage, seriesUrl)
+
+	shows, err := FindShows(seriesPage, seriesUrl)
 	if err != nil {
 		log.Fatal(err)
 	}
 	
-	wg := new(sync.WaitGroup)
-	shows := make(chan string)
-	results := make(chan DownloadResult, parallel)
-	
-	for i := 0; i < parallel; i++ {
-		wg.Add(1)
-		go RtmpDownloader(shows, results, wg)
+	for _, show := range shows {
+		dm.Download(show)
+	}
+}
+
+type RtmpSource interface {
+	Url() string
+	FetchStream() (*RtmpStream, error)
+}
+
+type NamedShow struct {
+	ShowUrl string
+}
+
+func (n *NamedShow) Url() string {
+	return n.ShowUrl
+}
+
+func (n *NamedShow) FetchStream() (*RtmpStream, error) {
+	showPage, err := DownloadPage(n.ShowUrl)
+	if err != nil {
+		return nil, errors.New(fmt.Sprintf("%s failed to download: %s", n.ShowUrl, err))
+	}
+
+	playerUrl := FindPlayerUrl(showPage)
+	if playerUrl == "" {
+		return nil, errors.New(fmt.Sprintf("%s does not contain a mediaframe", n.ShowUrl))
 	}
 	
+	rtmp := &RtmpStream{Source: n}
+	err = ParsePlayerParams(playerUrl, rtmp)
+	if err != nil {
+		return nil, errors.New(fmt.Sprintf("Player parameter parsing from %s failed on %s: %s", playerUrl, n.ShowUrl, err))
+	}
+
+	showName := path.Base(urlMustParse(n.ShowUrl).Path)
+	showExt := path.Ext(rtmp.File)
+	rtmp.Filename = showName + showExt
+
+	return rtmp, nil
+}
+
+type DownloadManager struct {
+	ToDownload chan RtmpSource
+	Results chan DownloadResult
+	registry DownloadRegistry
+	workerWait *sync.WaitGroup
+}
+
+func NewDownloadManager(registry DownloadRegistry) *DownloadManager {
+	dm := &DownloadManager{}
+	dm.workerWait = new(sync.WaitGroup)
+	dm.registry = registry
+	dm.ToDownload = make(chan RtmpSource)
+	dm.Results = make(chan DownloadResult, 1)
+	
 	go func() {
-		for result := range results {
-			if result.Code == DownloadOk {
+		for result := range dm.Results {
+			if result.IsSuccessful() {
 				registry.Add(result.ShowUrl, result.Filename)
 			} else {
 				log.Print("Downloading of %s failed: %s", result.ShowUrl, result.Error)
 			}
 		}
 	}()
-	
-	for _, showUrl := range showUrls {
-		if registry.Exists(showUrl) {
-			continue
+
+	return dm
+}
+
+func (dm *DownloadManager) Start(parallel int) {
+	for i := 0; i < parallel; i++ {
+		dm.workerWait.Add(1)
+		go dm.processDownloads()
+	}
+}
+
+func (dm *DownloadManager) Download(src RtmpSource) {
+	if !dm.registry.Exists(src.Url()) {
+		dm.ToDownload <- src
+	}
+}
+
+func (dm *DownloadManager) Close() {
+	close(dm.ToDownload)
+	dm.workerWait.Wait()
+	close(dm.Results)
+	dm.registry.Close()
+}
+
+func (dm *DownloadManager) processDownloads() {
+	defer dm.workerWait.Done()
+	for show := range dm.ToDownload {
+		result := DownloadResult{
+			ShowUrl: show.Url(),
 		}
-		shows <- showUrl
-	}
-	close(shows)
-	wg.Wait()
-	close(results)
-}
+		result.Error = func()error {
+			rtmp, err := show.FetchStream()
+			if err != nil {
+				return err
+			}
+			err = rtmp.Download()
+			if err != nil {
+				return errors.New(fmt.Sprintf("Rtmp download of %s failed for %s: %s", rtmp, show.Url(), err))
+			}
+			result.Filename = rtmp.Filename
+			return nil
+		}()
 
-func downloadShow(showUrl string) (result DownloadResult) {
-	result.ShowUrl, result.Code = showUrl, DownloadFailed
-
-	showPage, err := DownloadPage(showUrl)
-	if err != nil {
-		result.Error = errors.New(fmt.Sprintf("%s failed to download: %s", showUrl, err))
-		return
-	}
-
-	playerUrl := FindPlayerUrl(showPage)
-	if playerUrl == "" {
-		result.Error = errors.New(fmt.Sprintf("%s does not contain a mediaframe", showUrl))
-		return
-	}
-	rtmp, err := ParsePlayerParams(showUrl, playerUrl)
-	if err != nil {
-		result.Error = errors.New(fmt.Sprintf("Player parameter parsing from %s failed on %s: %s", playerUrl, showUrl, err))
-		return
-	}
-	err = rtmp.Download()
-	if err != nil {
-		result.Error = errors.New(fmt.Sprintf("Rtmp download of %s failed for %s: %s", rtmp, showUrl, err))
-		return
-	}
-	result.Filename = rtmp.OutName()
-	result.Code = DownloadOk
-	return
-}
-
-func RtmpDownloader(showUrls chan string, results chan DownloadResult, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for showUrl := range showUrls {
-		results <- downloadShow(showUrl)
+		dm.Results <- result
 	}
 }
 
@@ -288,11 +327,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer registry.Close()
+	manager := NewDownloadManager(registry)
+	manager.Start(parallel)
+	defer manager.Close()
 	
 	switch {
 	case series != "":
-		FetchSeries(registry, series, parallel)
+		FetchSeries(series, manager)
 	default:
 		log.Fatal("Must specify the -series flag")
 	}
