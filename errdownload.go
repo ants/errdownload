@@ -8,12 +8,12 @@ import (
 	"net/url"
 	"io/ioutil"
 	"log"
-	"os/exec"
 	"time"
 	"fmt"
 	"path"
 	"flag"
 	"github.com/ants/errdownload/download"
+	"github.com/ants/errdownload/rtmp"
 )
 
 
@@ -27,49 +27,17 @@ func FindPlayerUrl(page []byte) string {
 	return html.UnescapeString(string(match[1]))
 }
 
-var rtmpdumpBin *string = flag.String("rtmpdump", "rtmpdump", "Path to rtmpdump executable")
-
-type RtmpStream struct {
-	Source string
-	Stream string
-	File string
-	Filename string
-}
-
-func (r *RtmpStream) Download() error {
-	start := time.Now()
-	log.Printf("Starting download of stream from %s as %s", r.Source, r.Filename)
-	
-	rtmpCmd := exec.Command(*rtmpdumpBin, "-R", "-r", "rtmp://"+r.Stream, 
-						 "-y", r.File, "-o", r.Filename, "-q")
-	err := rtmpCmd.Run()
-	if err != nil {
-		return errors.New(fmt.Sprintf("Rtmp download of rtmp://%s%s failed for %s: %s",
-								r.Stream, r.File, r.Source, err))
-	}
-	end := time.Now()
-	log.Printf("Download of stream from %s took %s", r.Source, end.Sub(start))
-	return nil
-}
-
-
-
-func CheckForRtmp() (err error) {
-	_, err = exec.Command(*rtmpdumpBin, "--help").CombinedOutput()
-	return
-}
-
-func ParsePlayerParams(rawurl string, rtmp *RtmpStream) error {
+func ParsePlayerParams(rawurl string, stream *rtmp.Stream) error {
 	playerUrl, err := url.Parse(rawurl)
 	if err != nil {
 		return err
 	}
 	query := playerUrl.Query()
 
-	rtmp.Stream = query.Get("stream")
-	rtmp.File = query.Get("file")
+	stream.Stream = query.Get("stream")
+	stream.File = query.Get("file")
 
-	if rtmp.Stream == "" || rtmp.File == "" {
+	if stream.Stream == "" || stream.File == "" {
 		return errors.New("Not a valid player url "+rawurl)
 	}
 
@@ -153,21 +121,21 @@ func (n *NamedShow) Download() (string, error) {
 		return "", errors.New(fmt.Sprintf("%s does not contain a mediaframe", n.ShowUrl))
 	}
 	
-	rtmp := &RtmpStream{Source: n.ShowUrl}
-	err = ParsePlayerParams(playerUrl, rtmp)
+	stream := &rtmp.Stream{Source: n.ShowUrl}
+	err = ParsePlayerParams(playerUrl, stream)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("Player parameter parsing from %s failed on %s: %s", playerUrl, n.ShowUrl, err))
 	}
 
 	showName := path.Base(urlMustParse(n.ShowUrl).Path)
-	showExt := path.Ext(rtmp.File)
-	rtmp.Filename = showName + showExt
+	showExt := path.Ext(stream.File)
+	stream.Filename = showName + showExt
 
-	err = rtmp.Download()
+	err = stream.Download()
 	if err != nil {
 		return "", err
 	}
-	return rtmp.Filename, nil
+	return stream.Filename, nil
 }
 
 func main() {
@@ -182,7 +150,7 @@ func main() {
 
 	flag.Parse()
 	
-	if err := CheckForRtmp(); err != nil {
+	if err := rtmp.CheckBinary(); err != nil {
 		log.Fatal("rtmpdump execution failed: ", err)
 	}
 	
