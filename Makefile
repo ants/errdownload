@@ -1,8 +1,5 @@
 all: errdownload errdownload.exe
 
-test: sampleshow.html sampleseries.html
-	go test
-
 errdownload: errdownload.go */*.go
 	go build errdownload.go
 

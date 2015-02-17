@@ -2,29 +2,29 @@ package main
 
 import (
 	"errors"
-	"regexp"
-	"html"
-	"net/http"
 	"net/url"
-	"io/ioutil"
 	"log"
-	"time"
 	"fmt"
 	"path"
 	"flag"
 	"github.com/ants/errdownload/download"
 	"github.com/ants/errdownload/rtmp"
+	
+	"github.com/PuerkitoBio/goquery"
 )
 
 
-var mediaframeRe *regexp.Regexp = regexp.MustCompile(`<iframe id="mediaframe[^"]*"[^>]+src="([^"]*)"`)
-
-func FindPlayerUrl(page []byte) string {
-	match := mediaframeRe.FindSubmatch(page)
-	if match == nil {
-		return ""
+func FindPlayerUrl(showPage string) (string, error) {
+	doc, err := goquery.NewDocument(showPage)
+	if err != nil {
+		return "", err
 	}
-	return html.UnescapeString(string(match[1]))
+	src, exists := doc.Find(`iframe[id^="mediaframe"]`).First().Attr("src")
+	if !exists {
+		return "", errors.New(fmt.Sprintf("mediaframe not found in %s", showPage))
+	}
+	return src, nil
+	
 }
 
 func ParsePlayerParams(rawurl string, stream *rtmp.Stream) error {
@@ -52,54 +52,23 @@ func urlMustParse(rawurl string) *url.URL {
 	return result
 }
 
-var showpageRe *regexp.Regexp = regexp.MustCompile(`<h2><a href="(/vaata/[^"]*)"`)
-
-func FindShows(page []byte, baseUrl string) ([]download.Downloadable, error) {
-	base := urlMustParse(baseUrl)
-	
-	matches := showpageRe.FindAllSubmatch(page, -1)
-	if matches == nil {
-		return nil, errors.New("No shows found")
-	}
-	results := make([]download.Downloadable, 0, len(matches))
-	for _, match := range matches {
-		rel := urlMustParse(string(match[1]))
-		absUrl := base.ResolveReference(rel).String()
-		results = append(results, &NamedShow{ShowUrl:absUrl})
-	}
-	return results, nil
-}
-
-func DownloadPage(url string) ([]byte, error) {
-	start := time.Now()
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	end := time.Now()
-	log.Printf("Download of %s took %s", url, end.Sub(start))
-	return body, nil
-}
-
 func FetchSeries(seriesUrl string, dm *download.Manager) {
-	seriesPage, err := DownloadPage(seriesUrl)
+	doc, err := goquery.NewDocument(seriesUrl)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	shows, err := FindShows(seriesPage, seriesUrl)
-	if err != nil {
-		log.Fatal(err)
-	}
-	
-	for _, show := range shows {
-		dm.Download(show)
-	}
+	base := urlMustParse(seriesUrl)
+	seenUrls := map[string]bool{}
+
+	doc.Find(`a[href^="/vaata/"]`).Each(func(i int, s *goquery.Selection) {
+		href, _ := s.Attr("href")
+		absUrl := base.ResolveReference(urlMustParse(href)).String()
+		if !seenUrls[absUrl] {
+			dm.Download(&NamedShow{ShowUrl:absUrl})
+			seenUrls[absUrl] = true
+		}
+	})
 }
 
 type NamedShow struct {
@@ -111,16 +80,11 @@ func (n *NamedShow) Url() string {
 }
 
 func (n *NamedShow) Download() (string, error) {
-	showPage, err := DownloadPage(n.ShowUrl)
+	playerUrl, err := FindPlayerUrl(n.ShowUrl)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("%s failed to download: %s", n.ShowUrl, err))
+		return "", err
 	}
 
-	playerUrl := FindPlayerUrl(showPage)
-	if playerUrl == "" {
-		return "", errors.New(fmt.Sprintf("%s does not contain a mediaframe", n.ShowUrl))
-	}
-	
 	stream := &rtmp.Stream{Source: n.ShowUrl}
 	err = ParsePlayerParams(playerUrl, stream)
 	if err != nil {
