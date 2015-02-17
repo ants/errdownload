@@ -3,10 +3,10 @@ all: errdownload errdownload.exe
 test: sampleshow.html sampleseries.html
 	go test
 
-errdownload: errdownload.go
+errdownload: errdownload.go */*.go
 	go build errdownload.go
 
-errdownload.exe: errdownload.go
+errdownload.exe: errdownload.go */*.go
 	GOOS=windows GOARCH=386 go build -o errdownload.exe errdownload.go
 
 sampleshow.html:
