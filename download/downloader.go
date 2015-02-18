@@ -57,7 +57,7 @@ func NewManager(registryPath string) (dm *Manager, err error) {
 			if result.IsSuccessful() {
 				dm.registry.Add(result.Url, result.Filename)
 			} else {
-				log.Print("Downloading of %s failed: %s", result.Url, result.Error)
+				log.Printf("Downloading of %s failed: %s", result.Url, result.Error)
 			}
 		}
 	}()
