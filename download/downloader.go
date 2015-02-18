@@ -3,8 +3,8 @@ package download
 import (
 	"errors"
 	"log"
-	"sync"
 	"path"
+	"sync"
 )
 
 type Downloadable interface {
@@ -13,8 +13,8 @@ type Downloadable interface {
 }
 
 type Result struct {
-	Url string
-	Error error
+	Url      string
+	Error    error
 	Filename string
 }
 
@@ -30,8 +30,8 @@ type Registry interface {
 
 type Manager struct {
 	ToDownload chan Downloadable
-	Results chan Result
-	registry Registry
+	Results    chan Result
+	registry   Registry
 	workerWait *sync.WaitGroup
 }
 
@@ -39,19 +39,19 @@ func NewManager(registryPath string) (dm *Manager, err error) {
 	dm = &Manager{}
 
 	switch ext := path.Ext(registryPath); ext {
-		case ".csv":
-			dm.registry, err = OpenCsvRegistry(registryPath)
-		default:
-			err = errors.New("Unknow download registry extension "+ext)
+	case ".csv":
+		dm.registry, err = OpenCsvRegistry(registryPath)
+	default:
+		err = errors.New("Unknow download registry extension " + ext)
 	}
 	if err != nil {
 		return
 	}
-	
+
 	dm.workerWait = new(sync.WaitGroup)
 	dm.ToDownload = make(chan Downloadable)
 	dm.Results = make(chan Result, 1)
-	
+
 	go func() {
 		for result := range dm.Results {
 			if result.IsSuccessful() {

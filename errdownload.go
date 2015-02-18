@@ -1,23 +1,22 @@
 package main
 
 import (
-	"errors"
-	"net/url"
-	"io/ioutil"
-	"net/http"
 	"encoding/json"
-	"time"
-	"log"
-	"fmt"
-	"path"
+	"errors"
 	"flag"
-	"regexp"
+	"fmt"
 	"github.com/ants/errdownload/download"
 	"github.com/ants/errdownload/rtmp"
-	
+	"io/ioutil"
+	"log"
+	"net/http"
+	"net/url"
+	"path"
+	"regexp"
+	"time"
+
 	"github.com/PuerkitoBio/goquery"
 )
-
 
 func FindPlayerUrl(showPage string) (string, error) {
 	doc, err := goquery.NewDocument(showPage)
@@ -29,7 +28,7 @@ func FindPlayerUrl(showPage string) (string, error) {
 		return "", errors.New(fmt.Sprintf("mediaframe not found in %s", showPage))
 	}
 	return src, nil
-	
+
 }
 
 func ParsePlayerParams(rawurl string, stream *rtmp.Stream) error {
@@ -43,7 +42,7 @@ func ParsePlayerParams(rawurl string, stream *rtmp.Stream) error {
 	stream.File = query.Get("file")
 
 	if stream.Stream == "" || stream.File == "" {
-		return errors.New("Not a valid player url "+rawurl)
+		return errors.New("Not a valid player url " + rawurl)
 	}
 
 	return nil
@@ -70,7 +69,7 @@ func FetchSeries(seriesUrl string, dm *download.Manager) {
 		href, _ := s.Attr("href")
 		absUrl := base.ResolveReference(urlMustParse(href)).String()
 		if !seenUrls[absUrl] {
-			dm.Download(&NamedShow{ShowUrl:absUrl})
+			dm.Download(&NamedShow{ShowUrl: absUrl})
 			seenUrls[absUrl] = true
 		}
 	})
@@ -99,9 +98,8 @@ func downloadShow(show fetchable) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return stream.Filename, nil	
+	return stream.Filename, nil
 }
-
 
 type NamedShow struct {
 	ShowUrl string
@@ -122,25 +120,25 @@ func (n *NamedShow) Download() (string, error) {
 }
 
 type ApiResult struct {
-	TotalCount int
+	TotalCount          int
 	ElapsedMilliseconds int
-	Results []*SearchResult
+	Results             []*SearchResult
 }
 
 type SearchResult struct {
 	PublicId string
-	Updated string
-	Header string
-	Lead string
-	ShowUrl string `json:"Url"`
+	Updated  string
+	Header   string
+	Lead     string
+	ShowUrl  string `json:"Url"`
 }
 
 func (sr SearchResult) Url() string {
-	return "http://"+sr.ShowUrl
+	return "http://" + sr.ShowUrl
 }
 
 func (sr SearchResult) Filename(file string) string {
-	return sr.Header+"-"+path.Base(file)
+	return sr.Header + "-" + path.Base(file)
 }
 
 func (sr SearchResult) Download() (string, error) {
@@ -175,10 +173,10 @@ func FetchSearch(searchUrl, include string, dm *download.Manager) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	
-	earliest := time.Now().Add(-time.Hour*24*7)
+
+	earliest := time.Now().Add(-time.Hour * 24 * 7)
 	showMatcher := regexp.MustCompile(include)
-	
+
 	for _, searchresult := range apiResult.Results {
 		updated, err := time.Parse("2006-01-02T15:04:05", searchresult.Updated)
 		if err != nil || earliest.After(updated) {
@@ -193,11 +191,10 @@ func FetchSearch(searchUrl, include string, dm *download.Manager) {
 	return
 }
 
-
 func main() {
 	var parallel int
 	flag.IntVar(&parallel, "parallel", 1, "Number of parallel fetches to run")
-	
+
 	var series string
 	flag.StringVar(&series, "series", "", "Download series URL")
 
@@ -211,18 +208,18 @@ func main() {
 	flag.StringVar(&downloadRegistry, "downloads", "downloaded.csv", "Store data about downloaded shows in this file")
 
 	flag.Parse()
-	
+
 	if err := rtmp.CheckBinary(); err != nil {
 		log.Fatal("rtmpdump execution failed: ", err)
 	}
-	
+
 	manager, err := download.NewManager(downloadRegistry)
 	if err != nil {
 		log.Fatal(err)
 	}
 	manager.Start(parallel)
 	defer manager.Close()
-	
+
 	switch {
 	case series != "":
 		FetchSeries(series, manager)

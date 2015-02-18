@@ -1,17 +1,17 @@
 package download
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"encoding/csv"
 )
 
 type CsvRegistry struct {
 	records map[string]string
 	outfile *os.File
-	writer *csv.Writer
+	writer  *csv.Writer
 }
 
 func OpenCsvRegistry(registryfile string) (Registry, error) {
@@ -36,7 +36,7 @@ func OpenCsvRegistry(registryfile string) (Registry, error) {
 	return &CsvRegistry{
 		records: registry,
 		outfile: outfile,
-		writer: csv.NewWriter(outfile),
+		writer:  csv.NewWriter(outfile),
 	}, nil
 }
 
